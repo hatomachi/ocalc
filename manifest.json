@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "mycalc-plugin",
+	"name": "MyCalc Spreadsheet",
 	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"minAppVersion": "1.15.0",
+	"description": ".mycalcファイルを独自のスプレッドシートビューで開くプラグインです。",
+	"author": "Sota Ikari",
+	"authorUrl": "",
 	"isDesktopOnly": false
 }

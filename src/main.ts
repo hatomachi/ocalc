@@ -1,99 +1,146 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Plugin, WorkspaceLeaf, TFile, parseYaml } from 'obsidian';
+import { MyCalcView, VIEW_TYPE_OCALC, t } from './MyCalcView';
+import * as Papa from 'papaparse';
+import * as math from 'mathjs';
 
-// Remember to rename these classes and interfaces!
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
-
+export default class MyCalcPlugin extends Plugin {
 	async onload() {
-		await this.loadSettings();
+		this.registerView(
+			VIEW_TYPE_OCALC,
+			(leaf: WorkspaceLeaf) => new MyCalcView(leaf)
+		);
+		// ★修正: 拡張子を .ocalc に変更
+		this.registerExtensions(['ocalc'], VIEW_TYPE_OCALC);
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
+			id: 'create-ocalc-file',
+			// ★言語設定に応じたメニュー名
+			name: t('new_col_name') === "新しい列名" ? "新しい計算表 (.ocalc) を作成" : "Create new calc table (.ocalc)",
+			callback: async () => {
+				await this.createNewMyCalcFile();
 			}
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
+
+		// ★修正: コードブロックの識別子を ocalc に変更
+		this.registerMarkdownCodeBlockProcessor('ocalc', async (source, el, ctx) => {
+			const fileName = source.trim();
+			if (!fileName) return;
+
+			const file = this.app.metadataCache.getFirstLinkpathDest(fileName, ctx.sourcePath);
+
+			if (file instanceof TFile && file.extension === 'ocalc') {
+				const data = await this.app.vault.cachedRead(file);
+				this.renderEmbed(el, data, file.basename);
+			} else {
+				const errorBox = el.createDiv();
+				errorBox.style.color = "var(--text-error)";
+				errorBox.style.border = "1px solid var(--background-modifier-error)";
+				errorBox.style.padding = "8px";
+				errorBox.style.borderRadius = "4px";
+				errorBox.innerText = `⚠️ File not found / ファイルが見つかりません: ${fileName}`;
 			}
 		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+	}
+
+	async createNewMyCalcFile() {
+		let fileName = 'Untitled.ocalc';
+		let fileNumber = 1;
+		while (this.app.vault.getAbstractFileByPath(fileName)) {
+			fileName = `Untitled ${fileNumber}.ocalc`;
+			fileNumber++;
+		}
+
+		const initialData = `---
+formulas: {}
+totals:
+  showTotalRow: true
+  targetColumns: []
+---
+Column1
+`;
+		try {
+			const file = await this.app.vault.create(fileName, initialData);
+			const leaf = this.app.workspace.getLeaf(true);
+			await leaf.openFile(file);
+		} catch (e) {
+			console.error("Error creating file", e);
+		}
+	}
+
+	renderEmbed(container: HTMLElement, rawData: string, titleStr: string) {
+		let yamlStr = ""; let csvStr = rawData; let frontmatter: any = {};
+		if (rawData.startsWith("---\n")) {
+			const endIdx = rawData.indexOf("\n---\n", 4);
+			if (endIdx !== -1) {
+				yamlStr = rawData.substring(4, endIdx);
+				csvStr = rawData.substring(endIdx + 5).replace(/^[\r\n]+/, '');
+				try { frontmatter = parseYaml(yamlStr); } catch (e) { }
+			}
+		}
+
+		const parsedCsv = Papa.parse(csvStr, { header: true, skipEmptyLines: false });
+		if (!parsedCsv.meta.fields || parsedCsv.meta.fields.length === 0) parsedCsv.meta.fields = ["Column1"];
+		if (!parsedCsv.data || parsedCsv.data.length === 0) {
+			const emptyRow: any = {}; parsedCsv.meta.fields.forEach((f: string) => emptyRow[f] = "");
+			parsedCsv.data = [emptyRow];
+		}
+
+		const data = parsedCsv.data;
+		const fields = parsedCsv.meta.fields;
+
+		const wrapper = container.createDiv();
+		wrapper.style.border = "1px solid var(--background-modifier-border)";
+		wrapper.style.borderRadius = "8px";
+		wrapper.style.padding = "16px";
+		wrapper.style.backgroundColor = "var(--background-primary)";
+		wrapper.style.overflowX = "auto";
+		wrapper.style.margin = "1em 0";
+
+		const title = wrapper.createEl('h4', { text: `📊 ${titleStr}` });
+		title.style.marginTop = "0";
+		title.style.marginBottom = "12px";
+		title.style.color = "var(--text-normal)";
+
+		const table = wrapper.createEl('table');
+		table.style.width = "100%"; table.style.borderCollapse = "collapse";
+
+		const thead = table.createEl('thead');
+		const trHead = thead.createEl('tr');
+		fields.forEach((field: string) => {
+			const th = trHead.createEl('th', { text: field });
+			th.style.border = "1px solid var(--background-modifier-border)"; th.style.padding = "8px"; th.style.background = "var(--background-secondary)"; th.style.fontWeight = "bold";
+			if (frontmatter.formulas && frontmatter.formulas[field]) { th.innerText += " (fx)"; th.style.color = "var(--text-accent)"; }
+		});
+
+		const tbody = table.createEl('tbody');
+		data.forEach((row: any) => {
+			const tr = tbody.createEl('tr');
+			fields.forEach((field: string) => {
+				const td = tr.createEl('td', { text: String(row[field] || "") });
+				td.style.border = "1px solid var(--background-modifier-border)"; td.style.padding = "8px";
+				if (frontmatter.formulas && frontmatter.formulas[field]) { td.style.background = "var(--background-primary-alt)"; td.style.color = "var(--text-muted)"; }
+			});
+		});
+
+		if (frontmatter.totals?.showTotalRow !== false) {
+			const tfoot = table.createEl('tfoot'); const trFoot = tfoot.createEl('tr');
+			trFoot.style.fontWeight = "bold"; trFoot.style.background = "var(--background-secondary)";
+			let targetCols = frontmatter.totals?.targetColumns; if (!targetCols) targetCols = [...fields];
+
+			fields.forEach((field: string, index: number) => {
+				const tdFoot = trFoot.createEl('td'); tdFoot.style.border = "1px solid var(--background-modifier-border)"; tdFoot.style.padding = "8px";
+
+				// ★修正: i18nの翻訳を利用
+				if (index === 0) { tdFoot.innerText = t('total'); }
+				else if (targetCols.includes(field)) {
+					const resultVal = frontmatter.totals?.results?.[field];
+					if (resultVal !== undefined) {
+						tdFoot.innerText = String(resultVal);
+					} else {
+						tdFoot.innerText = "";
 					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
-	}
-
-	onunload() {
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+				} else { tdFoot.innerText = "-"; tdFoot.style.color = "var(--text-muted)"; tdFoot.style.textAlign = "center"; }
+			});
+		}
 	}
 }
